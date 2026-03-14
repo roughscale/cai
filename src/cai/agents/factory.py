@@ -8,8 +8,9 @@ from typing import Callable, Dict
 
 from openai import AsyncOpenAI
 
-from cai.sdk.agents import Agent, OpenAIChatCompletionsModel
+from cai.sdk.agents import Agent
 from cai.sdk.agents.logger import logger
+from cai.sdk.agents.models.model_routing import create_openai_model_instance
 
 
 def create_generic_agent_factory(
@@ -50,8 +51,8 @@ def create_generic_agent_factory(
 
         # Create a new model instance with the original agent name
         # Custom name is only for display purposes, not for the model
-        new_model = OpenAIChatCompletionsModel(
-            model=model_name,
+        new_model = create_openai_model_instance(
+            model_name=model_name,
             openai_client=AsyncOpenAI(api_key=api_key),
             agent_name=original_agent.name,  # Always use original agent name
             agent_id=agent_id,

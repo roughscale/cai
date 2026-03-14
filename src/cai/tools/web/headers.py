@@ -39,6 +39,34 @@ def web_request_framework(  # noqa: E501 # pylint: disable=too-many-arguments,to
             - Potential vulnerabilities
             - Suggested attack vectors
     """
+    def _display_args() -> dict:
+        tool_args = {"command": method, "args": url}
+        if headers:
+            tool_args["headers"] = headers
+        if cookies:
+            tool_args["cookies"] = cookies
+        if params:
+            tool_args["params"] = params
+        if data:
+            tool_args["data"] = data
+        return tool_args
+
+    def _emit_cli_output(result: str, status: str = "completed") -> None:
+        try:
+            from cai.tools.common import _get_agent_token_info
+            from cai.util import cli_print_tool_output
+
+            cli_print_tool_output(
+                tool_name="web_request_framework",
+                args=_display_args(),
+                output=result,
+                execution_info={"status": status},
+                token_info=_get_agent_token_info(),
+                streaming=False,
+            )
+        except Exception:
+            pass
+
     try:
         # Initialize analysis results
         analysis = []
@@ -134,7 +162,11 @@ def web_request_framework(  # noqa: E501 # pylint: disable=too-many-arguments,to
                 analysis.append(
                     f"\nPotential sensitive information found: '{pattern}'")
 
-        return "\n".join(analysis)
+        result = "\n".join(analysis)
+        _emit_cli_output(result)
+        return result
 
     except Exception as e:  # pylint: disable=broad-except
-        return f"Error analyzing request: {str(e)}"
+        error_result = f"Error analyzing request: {str(e)}"
+        _emit_cli_output(error_result, status="error")
+        return error_result

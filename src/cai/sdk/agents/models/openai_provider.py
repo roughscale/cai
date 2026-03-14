@@ -5,8 +5,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
 from . import _openai_shared
 from .interface import Model, ModelProvider
-from .openai_chatcompletions import OpenAIChatCompletionsModel
-from .openai_responses import OpenAIResponsesModel
+from .model_routing import create_openai_model_instance
 
 DEFAULT_MODEL: str = "gpt-4o"
 
@@ -83,9 +82,8 @@ class OpenAIProvider(ModelProvider):
             model_name = DEFAULT_MODEL
 
         client = self._get_client()
-
-        return (
-            OpenAIResponsesModel(model=model_name, openai_client=client)
-            if self._use_responses
-            else OpenAIChatCompletionsModel(model=model_name, openai_client=client)
+        return create_openai_model_instance(
+            model_name=model_name,
+            openai_client=client,
+            use_responses_by_default=self._use_responses,
         )

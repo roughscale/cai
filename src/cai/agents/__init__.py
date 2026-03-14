@@ -237,49 +237,43 @@ def get_agent_by_name(agent_name: str, custom_name: str = None, model_override: 
     # For singleton agents, try to create a copy with a fresh model instance
     if hasattr(agent, "model") and hasattr(agent.model, "__class__"):
         try:
-            # Create a new model instance
-            model_class = agent.model.__class__
-            if model_class.__name__ == "OpenAIChatCompletionsModel":
-                # Use custom name if provided, otherwise use agent's name
-                instance_name = custom_name if custom_name else agent.name
-                # Determine which model to use
-                model_to_use = model_override if model_override else agent.model.model
-                # Create new model with same config but new instance
-                new_model = model_class(
-                    model=model_to_use,
-                    openai_client=agent.model._client,
-                    agent_name=instance_name,
-                    agent_id=agent_id,
-                    agent_type=agent_name_lower,
-                )
-                # Clone the agent with the new model
-                cloned_agent = agent.clone(model=new_model)
-                # Update the agent's name if custom name provided
-                if custom_name:
-                    cloned_agent.name = custom_name
-                    
-                # Check if this agent has any MCP tools configured
-                try:
-                    from cai.repl.commands.mcp import get_mcp_tools_for_agent
-                    
-                    # Get MCP tools for this agent and add them
-                    mcp_tools = get_mcp_tools_for_agent(agent_name_lower)
-                    if mcp_tools:
-                        # Ensure the agent has tools list
-                        if not hasattr(cloned_agent, 'tools'):
-                            cloned_agent.tools = []
-                        
-                        # Remove any existing tools with the same names to avoid duplicates
-                        existing_tool_names = {t.name for t in mcp_tools}
-                        cloned_agent.tools = [t for t in cloned_agent.tools if t.name not in existing_tool_names]
-                        
-                        # Add the MCP tools
-                        cloned_agent.tools.extend(mcp_tools)
-                except ImportError:
-                    # MCP command not available, skip
-                    pass
-                    
-                return cloned_agent
+            from cai.sdk.agents.models.model_routing import create_openai_model_instance
+
+            instance_name = custom_name if custom_name else agent.name
+            model_to_use = model_override if model_override else agent.model.model
+            new_model = create_openai_model_instance(
+                model_name=model_to_use,
+                openai_client=agent.model._client,
+                agent_name=instance_name,
+                agent_id=agent_id,
+                agent_type=agent_name_lower,
+            )
+            cloned_agent = agent.clone(model=new_model)
+            if custom_name:
+                cloned_agent.name = custom_name
+
+            # Check if this agent has any MCP tools configured
+            try:
+                from cai.repl.commands.mcp import get_mcp_tools_for_agent
+
+                # Get MCP tools for this agent and add them
+                mcp_tools = get_mcp_tools_for_agent(agent_name_lower)
+                if mcp_tools:
+                    # Ensure the agent has tools list
+                    if not hasattr(cloned_agent, 'tools'):
+                        cloned_agent.tools = []
+
+                    # Remove any existing tools with the same names to avoid duplicates
+                    existing_tool_names = {t.name for t in mcp_tools}
+                    cloned_agent.tools = [t for t in cloned_agent.tools if t.name not in existing_tool_names]
+
+                    # Add the MCP tools
+                    cloned_agent.tools.extend(mcp_tools)
+            except ImportError:
+                # MCP command not available, skip
+                pass
+
+            return cloned_agent
         except Exception:
             # If cloning fails, return the original
             pass

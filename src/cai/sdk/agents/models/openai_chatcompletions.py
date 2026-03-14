@@ -71,6 +71,7 @@ from wasabi import color
 
 from cai.sdk.agents.simple_agent_manager import SimpleAgentManager, AGENT_MANAGER
 from cai.sdk.agents.parallel_isolation import PARALLEL_ISOLATION
+from cai.sdk.agents.model_trace import write_model_trace
 from cai.sdk.agents.run_to_jsonl import get_session_recorder
 from cai.sdk.agents.global_usage_tracker import GLOBAL_USAGE_TRACKER
 from cai.util import (
@@ -530,6 +531,21 @@ class OpenAIChatCompletionsModel(Model):
         # Increment the interaction counter for CLI display
         self.interaction_counter += 1
         self._intermediate_logs()
+
+        write_model_trace(
+            "model_get_response_start",
+            adapter="openai_chatcompletions",
+            agent_name=self.agent_name,
+            agent_type=self.agent_type,
+            model=str(self.model),
+            system_instructions=system_instructions,
+            input=input,
+            model_settings=model_settings,
+            tool_names=[tool.name for tool in tools if hasattr(tool, "name")],
+            handoff_names=[handoff.tool_name for handoff in handoffs],
+            output_schema=output_schema.json_schema() if output_schema else None,
+            message_history_size=len(self.message_history),
+        )
         
         # Set this as the current active model for tool execution context
         set_current_active_model(self)
@@ -681,6 +697,26 @@ class OpenAIChatCompletionsModel(Model):
                     converted_messages.insert(0, {"role": "system", "content": system_instructions})
                 estimated_input_tokens, _ = count_tokens_with_tiktoken(converted_messages)
 
+            write_model_trace(
+                "model_api_request",
+                adapter="openai_chatcompletions",
+                agent_name=self.agent_name,
+                model=str(self.model),
+                request={
+                    "messages": converted_messages,
+                    "system_instructions": system_instructions,
+                    "input": input,
+                    "tool_choice": model_settings.tool_choice,
+                    "parallel_tool_calls": model_settings.parallel_tool_calls,
+                    "max_tokens": model_settings.max_tokens,
+                    "temperature": model_settings.temperature,
+                    "top_p": model_settings.top_p,
+                    "output_schema": output_schema.json_schema() if output_schema else None,
+                    "handoffs": [handoff.tool_name for handoff in handoffs],
+                    "tool_names": [tool.name for tool in tools if hasattr(tool, "name")],
+                },
+            )
+
             # Pre-check price limit using estimated input tokens and a conservative estimate for output
             # This prevents starting a request that would immediately exceed the price limit
             if hasattr(COST_TRACKER, "check_price_limit"):
@@ -719,6 +755,15 @@ class OpenAIChatCompletionsModel(Model):
                 stop_active_timer()
                 start_idle_timer()
 
+                raise
+            except Exception as e:
+                write_model_trace(
+                    "model_get_response_error",
+                    adapter="openai_chatcompletions",
+                    agent_name=self.agent_name,
+                    model=str(self.model),
+                    error=str(e),
+                )
                 raise
 
             if _debug.DONT_LOG_MODEL_DATA:
@@ -1124,11 +1169,24 @@ class OpenAIChatCompletionsModel(Model):
             if not hasattr(response, "cost"):
                 response.cost = None
 
-            return ModelResponse(
+            model_response = ModelResponse(
                 output=items,
                 usage=usage,
                 referenceable_id=None,
             )
+
+            write_model_trace(
+                "model_get_response_end",
+                adapter="openai_chatcompletions",
+                agent_name=self.agent_name,
+                model=str(self.model),
+                usage=usage,
+                referenceable_id=None,
+                raw_response=response,
+                model_response_output=items,
+            )
+
+            return model_response
 
         # Stop active timer and start idle timer when response is complete
         stop_active_timer()

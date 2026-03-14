@@ -80,6 +80,18 @@ def get_predefined_model_categories() -> Dict[str, List[Dict[str, str]]]:
         ],
         "OpenAI": [
             {
+                "name": "gpt-5",
+                "description": "GPT-5 flagship model via the Responses API"
+            },
+            {
+                "name": "gpt-5-mini",
+                "description": "Smaller GPT-5 model for lower-latency tasks"
+            },
+            {
+                "name": "gpt-5-nano",
+                "description": "Fastest GPT-5 variant for lightweight tasks"
+            },
+            {
                 "name": "o3-mini",
                 "description": "Latest mini model in the O-series"
             },

@@ -28,10 +28,20 @@ def _get_agent_token_info():
     """Get current agent's token information from the active model instance."""
     # Try to get agent info from the current execution context
     try:
+        from cai.sdk.agents.simple_agent_manager import AGENT_MANAGER
         from cai.sdk.agents.models.openai_chatcompletions import get_current_active_model
-        
-        # First try to get the current active model (set during execution)
-        model = get_current_active_model()
+
+        model = None
+
+        # First use the currently active agent tracked by the agent manager. This works for both
+        # chat-completions and responses backends.
+        active_agent = AGENT_MANAGER.get_active_agent()
+        if active_agent and hasattr(active_agent, "model"):
+            model = active_agent.model
+
+        # Fallback to the thread-local current active model used by the chat-completions path.
+        if model is None:
+            model = get_current_active_model()
         
         if model:
             # Get display name with ID (e.g., "Red Team Agent [P1]")
@@ -835,13 +845,16 @@ async def _run_local_async(command, stdout=False, timeout=100, stream=False, cal
                     if int(os.getenv("CAI_PARALLEL", "1")) > 1:
                         is_parallel = True
             
-            # NEVER display panels in non-streaming mode
-            # The SDK will handle ALL display when CAI_STREAM=false
+            # Display completed tool panels in normal non-streaming runs as well.
+            # The previous policy assumed the SDK would surface equivalent progress,
+            # but Responses-backed runs do not expose intermediate tool activity well
+            # enough without these panels.
             streaming_enabled = os.getenv("CAI_STREAM", "false").lower() == "true"
             
-            # Only display panels if we're in streaming mode or parallel mode
-            # In streaming mode, the Live panels are handled by the streaming system
-            if streaming_enabled and is_parallel:
+            # In streaming mode, only parallel runs should emit completed panels because
+            # single-agent streaming already renders live updates. In non-streaming mode,
+            # always show the completed panel.
+            if (not streaming_enabled) or (streaming_enabled and is_parallel):
                 # Display the completed tool output
                 from cai.util import cli_print_tool_output
                 
@@ -2027,12 +2040,12 @@ def run_command(command, ctf=None, stdout=False,  # pylint: disable=too-many-arg
                             if int(os.getenv("CAI_PARALLEL", "1")) > 1:
                                 is_parallel = True
                     
-                    # NEVER display panels in non-streaming mode
-                    # The SDK will handle ALL display when CAI_STREAM=false
+                    # Display completed tool panels in normal non-streaming runs as well.
                     streaming_enabled = os.getenv("CAI_STREAM", "false").lower() == "true"
                     
-                    # Only display if we're in streaming mode AND parallel mode
-                    if streaming_enabled and is_parallel:
+                    # In streaming mode, only parallel runs need a completed panel because
+                    # single-agent streaming already owns the live display.
+                    if (not streaming_enabled) or (streaming_enabled and is_parallel):
                         from cai.util import cli_print_tool_output
                         
                         # Calculate execution time

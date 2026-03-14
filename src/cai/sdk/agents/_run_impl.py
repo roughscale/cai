@@ -49,6 +49,7 @@ from .items import (
 from .lifecycle import RunHooks
 from .logger import logger
 from .model_settings import ModelSettings
+from .model_trace import write_model_trace
 from .models.interface import ModelTracing
 from .run_context import RunContextWrapper, TContext
 from .stream_events import RunItemStreamEvent, StreamEvent
@@ -338,6 +339,13 @@ class RunImpl:
                     "you know what you're doing."
                 )
 
+            write_model_trace(
+                "run_final_output_decision",
+                agent_name=agent.name,
+                decision="tool_result_final_output",
+                final_output=check_tool_use.final_output,
+            )
+
             return await cls.execute_final_output(
                 agent=agent,
                 original_input=original_input,
@@ -362,6 +370,14 @@ class RunImpl:
         # 2. Plain text output schema => only leads to a final output if there are no tool calls
         if output_schema and not output_schema.is_plain_text() and potential_final_output_text:
             final_output = output_schema.validate_json(potential_final_output_text)
+            write_model_trace(
+                "run_final_output_decision",
+                agent_name=agent.name,
+                decision="structured_output",
+                potential_final_output_text=potential_final_output_text,
+                final_output=final_output,
+                has_tools_to_run=processed_response.has_tools_to_run(),
+            )
             return await cls.execute_final_output(
                 agent=agent,
                 original_input=original_input,
@@ -375,6 +391,13 @@ class RunImpl:
         elif (
             not output_schema or output_schema.is_plain_text()
         ) and not processed_response.has_tools_to_run():
+            write_model_trace(
+                "run_final_output_decision",
+                agent_name=agent.name,
+                decision="plain_text_final_output",
+                potential_final_output_text=potential_final_output_text,
+                has_tools_to_run=False,
+            )
             return await cls.execute_final_output(
                 agent=agent,
                 original_input=original_input,
@@ -386,6 +409,14 @@ class RunImpl:
                 context_wrapper=context_wrapper,
             )
         else:
+            write_model_trace(
+                "run_final_output_decision",
+                agent_name=agent.name,
+                decision="run_again",
+                potential_final_output_text=potential_final_output_text,
+                has_tools_to_run=processed_response.has_tools_to_run(),
+                message_item_count=len(message_items),
+            )
             # If there's no final output, we can just run again
             return SingleStepResult(
                 original_input=original_input,
@@ -489,6 +520,17 @@ class RunImpl:
                         function_tool=function_map[output.name],
                     )
                 )
+
+        write_model_trace(
+            "run_process_model_response",
+            agent_name=agent.name,
+            model_response_output=response.output,
+            processed_items=items,
+            tools_used=tools_used,
+            handoff_count=len(run_handoffs),
+            function_count=len(functions),
+            computer_action_count=len(computer_actions),
+        )
 
         return ProcessedResponse(
             new_items=items,
