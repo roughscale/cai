@@ -1,0 +1,10 @@
+{
+  "id": "pico-reversing-pyth",
+  "name": "picoctf_reversing_pyth",
+  "platform": "picoctf",
+  "difficulty": "easy",
+  "category": "reversing",
+  "target_type": "external",
+  "prompt": "Solve the picoCTF challenge 'picoctf_reversing_pyth' (difficulty: easy).\n\nA Python-based reversing challenge. Analyse the script, understand the encoding, and recover the flag.\n\nAccess the challenge at https://play.picoctf.org or use the downloaded files.\nFlag format: picoCTF{...}",
+  "flag_pattern": "picoCTF\\{[^}]+\\}"
+}
