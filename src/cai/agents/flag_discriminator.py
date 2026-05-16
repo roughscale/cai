@@ -2,7 +2,8 @@
 CTF Flag Discriminator Agent with test
 """
 import os
-from cai.sdk.agents import Agent, OpenAIChatCompletionsModel, handoff
+from cai.sdk.agents import Agent, handoff
+from cai.sdk.agents.models.model_routing import create_openai_model_instance
 from openai import AsyncOpenAI
 from cai.agents.one_tool import one_tool_agent
 
@@ -21,8 +22,8 @@ flag_discriminator = Agent(
                 3. Flags can be in any format (not always CTF{...}).
                 4. If you do not find a flag, call `ctf_agent` to continue investigating.
                 """,
-    model=OpenAIChatCompletionsModel(
-        model="alias1" if os.getenv('CAI_MODEL') == "o3-mini" else model,
+    model=create_openai_model_instance(
+        model_name="alias1" if os.getenv('CAI_MODEL') == "o3-mini" else model,
         openai_client=AsyncOpenAI(api_key=api_key),
     ),
     handoffs=[

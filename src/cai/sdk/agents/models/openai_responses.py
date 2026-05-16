@@ -282,8 +282,13 @@ class OpenAIResponsesModel(Model):
                     span_response.span_data.input = input
                     
                 # Print the agent message for CLI display
-                from cai.util import cli_print_agent_messages
+                from cai.util import cli_print_agent_messages, calculate_model_cost
                 try:
+                    interaction_cost = calculate_model_cost(
+                        str(self.model), usage.input_tokens, usage.output_tokens
+                    )
+                    self.total_cost = (self.total_cost or 0.0) + (interaction_cost or 0.0)
+
                     message_obj = self._build_cli_message(response)
                     cli_print_agent_messages(
                         agent_name=getattr(self, 'agent_name', 'Agent'),
@@ -297,8 +302,8 @@ class OpenAIResponsesModel(Model):
                         total_input_tokens=getattr(self, 'total_input_tokens', 0),
                         total_output_tokens=getattr(self, 'total_output_tokens', 0),
                         total_reasoning_tokens=getattr(self, 'total_reasoning_tokens', 0),
-                        interaction_cost=None,
-                        total_cost=None,
+                        interaction_cost=interaction_cost,
+                        total_cost=self.total_cost,
                         suppress_empty=True,
                     )
 
@@ -391,8 +396,15 @@ class OpenAIResponsesModel(Model):
                     span_response.span_data.input = input
 
                 # Print the agent message for CLI display
-                from cai.util import cli_print_agent_messages
+                from cai.util import cli_print_agent_messages, calculate_model_cost
                 try:
+                    interaction_cost = calculate_model_cost(
+                        str(self.model),
+                        final_response.usage.input_tokens,
+                        final_response.usage.output_tokens,
+                    )
+                    self.total_cost = (self.total_cost or 0.0) + (interaction_cost or 0.0)
+
                     message_obj = self._build_cli_message(final_response)
                     cli_print_agent_messages(
                         agent_name=getattr(self, 'agent_name', 'Agent'),
@@ -406,8 +418,8 @@ class OpenAIResponsesModel(Model):
                         total_input_tokens=getattr(self, 'total_input_tokens', 0),
                         total_output_tokens=getattr(self, 'total_output_tokens', 0),
                         total_reasoning_tokens=getattr(self, 'total_reasoning_tokens', 0),
-                        interaction_cost=None,
-                        total_cost=None,
+                        interaction_cost=interaction_cost,
+                        total_cost=self.total_cost,
                         suppress_empty=True,
                     )
 
@@ -484,6 +496,18 @@ class OpenAIResponsesModel(Model):
             else:
                 previous_response_id = None
                 self.previous_response_id = None
+
+        import dataclasses
+        env_reasoning_effort = os.environ.get("CAI_REASONING_EFFORT")
+        env_verbosity = os.environ.get("CAI_VERBOSITY")
+        if env_reasoning_effort is not None and model_settings.reasoning_effort is None:
+            model_settings = dataclasses.replace(
+                model_settings, reasoning_effort=env_reasoning_effort
+            )
+        if env_verbosity is not None and model_settings.verbosity is None:
+            model_settings = dataclasses.replace(
+                model_settings, verbosity=env_verbosity
+            )
 
         parallel_tool_calls = (
             True

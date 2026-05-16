@@ -2,7 +2,8 @@
 CTF Agent with one tool
 """
 import os
-from cai.sdk.agents import Agent, OpenAIChatCompletionsModel
+from cai.sdk.agents import Agent
+from cai.sdk.agents.models.model_routing import create_openai_model_instance
 from cai.tools.reconnaissance.generic_linux_command import generic_linux_command  # noqa
 from openai import AsyncOpenAI
 from cai.util import create_system_prompt_renderer
@@ -68,8 +69,8 @@ one_tool_agent = Agent(
     ],
     input_guardrails=input_guardrails,
     output_guardrails=output_guardrails,
-    model=OpenAIChatCompletionsModel(
-        model=model_name,
+    model=create_openai_model_instance(
+        model_name=model_name,
         openai_client=AsyncOpenAI(api_key=api_key),
     )
 )
