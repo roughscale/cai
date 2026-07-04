@@ -9,6 +9,21 @@ For local challenges the orchestrator provisions the target Docker environment
 and tears it down after each run. For external challenges it just runs the CAI
 container — target connectivity is the runner's concern.
 
+Each run produces a per-run directory under results/:
+
+    results/run_{challenge_id}_{timestamp}_{uuid}/
+        metadata.json       challenge definition, model, agent, parameters
+        events.jsonl        lifecycle events (append-only)
+        commands.jsonl      docker commands executed (append-only)
+        transcript.jsonl    agent tool calls and messages (append-only)
+        score.json          final result (solved, flag, cost, etc.)
+        artifacts/          any files produced by the agent
+        target_logs/
+            cai/
+                logs/       volume-mounted from container /opt/cai/logs
+
+A cross-run summary is also appended to results/benchmark.jsonl.
+
 Usage:
     python bench/orchestrator.py [options]
 
@@ -18,7 +33,8 @@ Usage:
     --model MODEL         CAI model to use (default: gpt-5)
     --agent AGENT         Agent type key (default: redteam_agent)
     --max-turns N         Max LLM interactions per challenge (default: 100)
-    --output PATH         JSONL results file (default: results/benchmark.jsonl)
+    --output PATH         Cross-run JSONL index (default: results/benchmark.jsonl)
+    --results-dir PATH    Root directory for per-run output (default: results)
     --filter IDS          Comma-separated challenge IDs to run (default: all)
     --target-host HOST    Override target_host for all challenges (useful for HTB machines)
     --htb-api-key KEY     HTB API key — auto-resolves target_host from the active HTB machine
@@ -45,6 +61,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -58,6 +75,88 @@ BENCH_DIR = REPO_ROOT / "bench"
 IMAGE_NAME = "cai-bench:latest"
 
 API_KEY_VARS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "ALIAS_API_KEY")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Run recorder — mirrors bench-orchestrator's RunRecorder interface
+# ---------------------------------------------------------------------------
+
+class RunRecorder:
+    """
+    Append-only evidence recorder for a single benchmark run.
+
+    Produces the following layout under run_dir:
+        metadata.json       static run parameters
+        events.jsonl        lifecycle events
+        commands.jsonl      docker commands issued by the orchestrator
+        transcript.jsonl    agent turn-by-turn dialogue (from runner stdout)
+        score.json          final scoring result
+        artifacts/          files produced by the agent
+        target_logs/cai/logs/   volume-mounted container log directory
+    """
+
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        self.log_dir = run_dir / "target_logs" / "cai" / "logs"
+        self.artifacts_dir = run_dir / "artifacts"
+
+        for d in (self.run_dir, self.log_dir, self.artifacts_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        self._events_path = run_dir / "events.jsonl"
+        self._commands_path = run_dir / "commands.jsonl"
+
+    # ------------------------------------------------------------------
+    def write_metadata(self, challenge: dict, model: str, agent: str, max_turns: int) -> None:
+        meta = {
+            "run_id": self.run_dir.name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "challenge": {k: v for k, v in challenge.items() if not k.startswith("_")},
+            "model": model,
+            "agent": agent,
+            "max_turns": max_turns,
+        }
+        (self.run_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
+
+    def event(self, phase: str, payload: dict | None = None) -> None:
+        entry = {"ts": datetime.now(timezone.utc).isoformat(), "phase": phase, "payload": payload or {}}
+        with open(self._events_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def command(self, cmd: list[str], return_code: int, stdout: str = "", stderr: str = "") -> None:
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "command": " ".join(str(c) for c in cmd),
+            "return_code": return_code,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        with open(self._commands_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def write_score(self, record: dict) -> None:
+        score = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "passed": record.get("solved", False),
+            "flag": record.get("flag"),
+            "time_s": record.get("time_s"),
+            "turns": record.get("turns"),
+            "input_tokens": record.get("input_tokens"),
+            "output_tokens": record.get("output_tokens"),
+            "cost_usd": record.get("cost_usd"),
+            "error": record.get("error"),
+        }
+        (self.run_dir / "score.json").write_text(json.dumps(score, indent=2))
+
+
+def _make_run_dir(results_root: Path, challenge_id: str) -> Path:
+    safe_id = challenge_id.lower().replace("/", "-")
+    run_id = f"run_{safe_id}_{_now()}_{uuid.uuid4().hex[:8]}"
+    return results_root / run_id
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +176,6 @@ def get_htb_active_machine_ip(api_key: str) -> str | None:
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        # Response shape: {"info": {"ip": "10.10.11.44", "name": "Alert", ...}}
         ip = data.get("info", {}).get("ip")
         name = data.get("info", {}).get("name", "unknown")
         if ip:
@@ -184,7 +282,7 @@ def _container_ids_for_project(project: str, bench_dir: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def run_challenge(challenge: dict, model: str, agent: str, max_turns: int,
-                  timeout_s: int, api_keys: dict) -> dict:
+                  timeout_s: int, api_keys: dict, results_root: Path) -> dict:
     target_type = challenge.get("target_type", "local")
     record = {
         "id": challenge["id"],
@@ -203,12 +301,13 @@ def run_challenge(challenge: dict, model: str, agent: str, max_turns: int,
         "output_tokens": None,
         "cost_usd": None,
         "error": None,
+        "run_dir": None,
     }
 
     if target_type == "local":
-        return _run_local_challenge(challenge, record, model, agent, max_turns, timeout_s, api_keys)
+        return _run_local_challenge(challenge, record, model, agent, max_turns, timeout_s, api_keys, results_root)
     else:
-        return _run_external_challenge(challenge, record, model, agent, max_turns, timeout_s, api_keys)
+        return _run_external_challenge(challenge, record, model, agent, max_turns, timeout_s, api_keys, results_root)
 
 
 def _build_runner_env(challenge: dict, model: str, agent: str, max_turns: int,
@@ -230,7 +329,13 @@ def _build_runner_env(challenge: dict, model: str, agent: str, max_turns: int,
     return env
 
 
-def _docker_run(runner_env: dict, network: str | None, timeout_s: int) -> tuple[dict, str | None]:
+def _docker_run(
+    runner_env: dict,
+    network: str | None,
+    timeout_s: int,
+    volumes: dict[str, str] | None = None,
+    recorder: RunRecorder | None = None,
+) -> tuple[dict, str | None]:
     """Run the cai-bench container. Streams stderr; returns (parsed_result, error_string)."""
     import threading
     cmd = ["docker", "run", "--rm"]
@@ -238,7 +343,12 @@ def _docker_run(runner_env: dict, network: str | None, timeout_s: int) -> tuple[
         cmd += [f"--network={network}"]
     for k, v in runner_env.items():
         cmd += ["-e", f"{k}={v}"]
+    for host_path, container_path in (volumes or {}).items():
+        cmd += ["-v", f"{host_path}:{container_path}"]
     cmd.append(IMAGE_NAME)
+
+    if recorder:
+        recorder.command(cmd, return_code=-1)  # placeholder; updated on completion
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -284,10 +394,8 @@ def _docker_run(runner_env: dict, network: str | None, timeout_s: int) -> tuple[
         return {}, str(exc)
 
 
-def _run_external_challenge(challenge: dict, record: dict, model: str, agent: str,
-                             max_turns: int, timeout_s: int, api_keys: dict) -> dict:
-    runner_env = _build_runner_env(challenge, model, agent, max_turns, api_keys)
-    result, error = _docker_run(runner_env, network=None, timeout_s=timeout_s)
+def _apply_result(record: dict, result: dict, error: str | None, recorder: RunRecorder) -> None:
+    """Update record from runner result, write per-run score and transcript."""
     record.update({
         "solved": result.get("solved", False),
         "flag": result.get("flag"),
@@ -297,70 +405,96 @@ def _run_external_challenge(challenge: dict, record: dict, model: str, agent: st
         "output_tokens": result.get("output_tokens"),
         "cost_usd": result.get("cost_usd"),
         "error": error or result.get("error"),
-        "transcript": result.get("transcript"),
     })
+    recorder.write_score(record)
+
+
+def _run_external_challenge(challenge: dict, record: dict, model: str, agent: str,
+                             max_turns: int, timeout_s: int, api_keys: dict,
+                             results_root: Path) -> dict:
+    run_dir = _make_run_dir(results_root, challenge["id"])
+    recorder = RunRecorder(run_dir)
+    record["run_dir"] = str(run_dir)
+    print(f"  run dir: {run_dir.relative_to(REPO_ROOT)}")
+
+    recorder.write_metadata(challenge, model, agent, max_turns)
+    recorder.event("started", {"challenge_id": challenge["id"], "target_type": "external"})
+
+    volumes = {
+        str(recorder.log_dir.resolve()): "/opt/cai/logs",
+        str(recorder.artifacts_dir.resolve()): "/opt/cai/artifacts",
+    }
+
+    runner_env = _build_runner_env(challenge, model, agent, max_turns, api_keys)
+    recorder.event("container_starting")
+    result, error = _docker_run(runner_env, network=None, timeout_s=timeout_s,
+                                volumes=volumes, recorder=recorder)
+    recorder.event("container_finished", {"error": error})
+
+    _apply_result(record, result, error, recorder)
+    recorder.event("completed", {"passed": record["solved"]})
     return record
 
 
 def _run_local_challenge(challenge: dict, record: dict, model: str, agent: str,
-                          max_turns: int, timeout_s: int, api_keys: dict) -> dict:
+                          max_turns: int, timeout_s: int, api_keys: dict,
+                          results_root: Path) -> dict:
+    run_dir = _make_run_dir(results_root, challenge["id"])
+    recorder = RunRecorder(run_dir)
+    record["run_dir"] = str(run_dir)
+    print(f"  run dir: {run_dir.relative_to(REPO_ROOT)}")
+
+    recorder.write_metadata(challenge, model, agent, max_turns)
+    recorder.event("started", {"challenge_id": challenge["id"], "target_type": "local"})
+
     bench_dir: Path = challenge["_bench_dir"]
-    compose_file: Path = challenge["compose_file"]
     flag: str = challenge["flag_build_arg"]
-    run_id = uuid.uuid4().hex[:8]
-    project = f"bench-{challenge['id'].lower()}-{run_id}"
+    project = f"bench-{challenge['id'].lower()}-{uuid.uuid4().hex[:8]}"
     network = f"{project}-net"
 
     try:
-        # Isolated network
         print(f"  Creating network {network}...")
-        subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
+        r = subprocess.run(["docker", "network", "create", network], capture_output=True, text=True)
+        recorder.command(["docker", "network", "create", network], r.returncode, r.stdout, r.stderr)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr)
 
-        # Build target image with FLAG arg, then start
         print(f"  Building target image...")
-        _docker_compose(
-            ["-p", project, "build", "--build-arg", f"FLAG={flag}"],
-            bench_dir,
-            {"FLAG": flag},
-        )
-        print(f"  Starting target (waiting for healthcheck)...")
-        _docker_compose(
-            ["-p", project, "up", "--wait", "--detach"],
-            bench_dir,
-            {"FLAG": flag},
-        )
+        recorder.event("target_building")
+        _docker_compose(["-p", project, "build", "--build-arg", f"FLAG={flag}"], bench_dir, {"FLAG": flag})
 
-        # Connect target containers to bench network
+        print(f"  Starting target (waiting for healthcheck)...")
+        recorder.event("target_starting")
+        _docker_compose(["-p", project, "up", "--wait", "--detach"], bench_dir, {"FLAG": flag})
+        recorder.event("target_started")
+
         print(f"  Connecting target containers to bench network...")
         for cid in _container_ids_for_project(project, bench_dir):
-            subprocess.run(
-                ["docker", "network", "connect", network, cid],
-                check=True, capture_output=True,
-            )
+            subprocess.run(["docker", "network", "connect", network, cid], check=True, capture_output=True)
+
+        volumes = {
+            str(recorder.log_dir.resolve()): "/opt/cai/logs",
+            str(recorder.artifacts_dir.resolve()): "/opt/cai/artifacts",
+        }
 
         print(f"  Running agent...")
+        recorder.event("container_starting")
         runner_env = _build_runner_env(challenge, model, agent, max_turns, api_keys)
-        result, error = _docker_run(runner_env, network=network, timeout_s=timeout_s)
-        record.update({
-            "solved": result.get("solved", False),
-            "flag": result.get("flag"),
-            "time_s": result.get("time_s"),
-            "turns": result.get("turns"),
-            "input_tokens": result.get("input_tokens"),
-            "output_tokens": result.get("output_tokens"),
-            "cost_usd": result.get("cost_usd"),
-            "error": error or result.get("error"),
-            "transcript": result.get("transcript"),
-        })
+        result, error = _docker_run(runner_env, network=network, timeout_s=timeout_s,
+                                    volumes=volumes, recorder=recorder)
+        recorder.event("container_finished", {"error": error})
+        _apply_result(record, result, error, recorder)
 
     except Exception as exc:
         record["error"] = str(exc)
+        recorder.event("error", {"message": str(exc)})
     finally:
         subprocess.run(
             ["docker", "compose", "-p", project, "down", "-v", "--remove-orphans"],
             cwd=bench_dir, capture_output=True,
         )
         subprocess.run(["docker", "network", "rm", network], capture_output=True)
+        recorder.event("completed", {"passed": record["solved"]})
 
     return record
 
@@ -404,6 +538,7 @@ def main() -> None:
     parser.add_argument("--agent", default="redteam_agent")
     parser.add_argument("--max-turns", type=int, default=100)
     parser.add_argument("--output", default="results/benchmark.jsonl")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument("--challenge", help="Path to a single challenge JSON file")
     parser.add_argument("--filter", help="Comma-separated challenge IDs to run")
     parser.add_argument("--target-host", help="Override target_host for all challenges (e.g. HTB machine IP)")
@@ -456,11 +591,12 @@ def main() -> None:
 
     api_keys = {k: os.environ[k] for k in API_KEY_VARS if k in os.environ}
 
+    results_root = REPO_ROOT / args.results_dir
     output_path = REPO_ROOT / args.output
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     records: list[dict] = []
-    with open(output_path, "w") as fh:
+    with open(output_path, "a") as fh:
         for challenge in challenges:
             cid = challenge["id"]
             ctype = challenge.get("target_type", "local")
@@ -473,9 +609,12 @@ def main() -> None:
                 max_turns=args.max_turns,
                 timeout_s=args.timeout,
                 api_keys=api_keys,
+                results_root=results_root,
             )
             records.append(record)
-            fh.write(json.dumps(record) + "\n")
+            # Write lean summary record (no transcript — that lives in run_dir/transcript.jsonl)
+            summary = {k: v for k, v in record.items() if k != "transcript"}
+            fh.write(json.dumps(summary) + "\n")
             fh.flush()
 
             status = "✓ SOLVED" if record["solved"] else f"✗  {record.get('error') or 'not solved'}"
