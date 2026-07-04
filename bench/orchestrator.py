@@ -14,17 +14,27 @@ Usage:
 
     --benchmarks PATH     Root of XBEN benchmarks (default: targets/validation-benchmarks/benchmarks)
     --challenges PATH     Directory of external challenge JSON files (default: bench/challenges)
+    --challenge PATH      Run a single challenge JSON file directly
     --model MODEL         CAI model to use (default: gpt-5)
     --agent AGENT         Agent type key (default: redteam_agent)
     --max-turns N         Max LLM interactions per challenge (default: 100)
     --output PATH         JSONL results file (default: results/benchmark.jsonl)
     --filter IDS          Comma-separated challenge IDs to run (default: all)
+    --target-host HOST    Override target_host for all challenges (useful for HTB machines)
+    --htb-api-key KEY     HTB API key — auto-resolves target_host from the active HTB machine
     --local-only          Only run local XBEN challenges
     --external-only       Only run external challenges
     --build               Rebuild the cai-bench Docker image before running
     --timeout N           Per-challenge wall-clock timeout in seconds (default: 1800)
 
 API keys are read from the host environment and forwarded to the runner container.
+
+HTB workflow (no file editing needed):
+    # Manual IP:
+    python bench/orchestrator.py --challenge bench/challenges/htb-alert.json --target-host 10.10.11.44
+
+    # Auto-resolve from active HTB machine (requires HTB_API_KEY env var or --htb-api-key):
+    python bench/orchestrator.py --challenge bench/challenges/htb-alert.json --htb-api-key <token>
 """
 from __future__ import annotations
 
@@ -37,11 +47,45 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 REPO_ROOT = Path(__file__).parent.parent
 BENCH_DIR = REPO_ROOT / "bench"
 IMAGE_NAME = "cai-bench:latest"
 
-API_KEY_VARS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY")
+API_KEY_VARS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "ALIAS_API_KEY")
+
+
+# ---------------------------------------------------------------------------
+# HTB helpers
+# ---------------------------------------------------------------------------
+
+def get_htb_active_machine_ip(api_key: str) -> str | None:
+    """Query the HTB API for the currently active machine and return its IP."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "https://labs.hackthebox.com/api/v4/machine/active",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        # Response shape: {"info": {"ip": "10.10.11.44", "name": "Alert", ...}}
+        ip = data.get("info", {}).get("ip")
+        name = data.get("info", {}).get("name", "unknown")
+        if ip:
+            print(f"  HTB active machine: {name} @ {ip}")
+        return ip
+    except Exception as exc:
+        print(f"  Warning: could not fetch HTB active machine IP: {exc}", file=sys.stderr)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -199,22 +243,32 @@ def _docker_run(runner_env: dict, network: str | None, timeout_s: int) -> tuple[
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
+        stdout_lines: list[str] = []
+
+        def collect_stdout():
+            for line in proc.stdout:
+                stdout_lines.append(line)
+
         def stream_stderr():
             for line in proc.stderr:
                 print(f"    {line}", end="", flush=True)
 
+        stdout_thread = threading.Thread(target=collect_stdout, daemon=True)
         stderr_thread = threading.Thread(target=stream_stderr, daemon=True)
+        stdout_thread.start()
         stderr_thread.start()
 
         try:
             proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             proc.kill()
+            stdout_thread.join()
             stderr_thread.join()
             return {}, f"wall-clock timeout after {timeout_s}s"
 
+        stdout_thread.join()
         stderr_thread.join()
-        stdout = proc.stdout.read()
+        stdout = "".join(stdout_lines)
         for line in reversed(stdout.splitlines()):
             line = line.strip()
             if not line:
@@ -243,6 +297,7 @@ def _run_external_challenge(challenge: dict, record: dict, model: str, agent: st
         "output_tokens": result.get("output_tokens"),
         "cost_usd": result.get("cost_usd"),
         "error": error or result.get("error"),
+        "transcript": result.get("transcript"),
     })
     return record
 
@@ -295,6 +350,7 @@ def _run_local_challenge(challenge: dict, record: dict, model: str, agent: str,
             "output_tokens": result.get("output_tokens"),
             "cost_usd": result.get("cost_usd"),
             "error": error or result.get("error"),
+            "transcript": result.get("transcript"),
         })
 
     except Exception as exc:
@@ -348,7 +404,11 @@ def main() -> None:
     parser.add_argument("--agent", default="redteam_agent")
     parser.add_argument("--max-turns", type=int, default=100)
     parser.add_argument("--output", default="results/benchmark.jsonl")
+    parser.add_argument("--challenge", help="Path to a single challenge JSON file")
     parser.add_argument("--filter", help="Comma-separated challenge IDs to run")
+    parser.add_argument("--target-host", help="Override target_host for all challenges (e.g. HTB machine IP)")
+    parser.add_argument("--htb-api-key", default=os.environ.get("HTB_API_KEY"),
+                        help="HTB API key to auto-resolve the active machine IP (env: HTB_API_KEY)")
     parser.add_argument("--local-only", action="store_true")
     parser.add_argument("--external-only", action="store_true")
     parser.add_argument("--build", action="store_true")
@@ -358,15 +418,37 @@ def main() -> None:
     if args.build:
         build_image()
 
-    challenges: list[dict] = []
-    if not args.external_only:
-        challenges += load_local_challenges(REPO_ROOT / args.benchmarks)
-    if not args.local_only:
-        challenges += load_external_challenges(REPO_ROOT / args.challenges)
+    # Resolve target host: explicit flag > HTB API > nothing
+    target_host: str | None = args.target_host
+    if not target_host and args.htb_api_key:
+        target_host = get_htb_active_machine_ip(args.htb_api_key)
 
-    if args.filter:
-        allowed = set(args.filter.split(","))
-        challenges = [c for c in challenges if c["id"] in allowed]
+    if args.challenge:
+        path = Path(args.challenge)
+        if not path.exists():
+            print(f"Challenge file not found: {path}", file=sys.stderr)
+            sys.exit(1)
+        data = json.loads(path.read_text())
+        data.setdefault("target_type", "external")
+        challenges: list[dict] = [data]
+    else:
+        challenges: list[dict] = []
+        if not args.external_only:
+            challenges += load_local_challenges(REPO_ROOT / args.benchmarks)
+        if not args.local_only:
+            challenges += load_external_challenges(REPO_ROOT / args.challenges)
+
+        if args.filter:
+            allowed = set(args.filter.split(","))
+            challenges = [c for c in challenges if c["id"] in allowed]
+
+    # Apply target_host override to all challenges
+    if target_host:
+        for c in challenges:
+            old_host = c.get("target_host", "REPLACE_WITH_HTB_MACHINE_IP")
+            c["target_host"] = target_host
+            if "prompt" in c:
+                c["prompt"] = c["prompt"].replace(old_host, target_host)
 
     if not challenges:
         print("No challenges found.", file=sys.stderr)

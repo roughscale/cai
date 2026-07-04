@@ -90,6 +90,53 @@ def collect_all_text(result) -> str:
     return "\n".join(parts)
 
 
+TOOL_OUTPUT_TRUNCATE = 4000
+
+
+def serialize_transcript(items) -> list[dict]:
+    """Serialize result.new_items into a JSON-safe transcript list."""
+    transcript = []
+    for item in items:
+        kind = getattr(item, "type", type(item).__name__)
+        agent_name = getattr(getattr(item, "agent", None), "name", None)
+        entry: dict = {"type": kind, "agent": agent_name}
+
+        if kind == "message_output_item":
+            text = ""
+            for c in getattr(item.raw_item, "content", []):
+                text += getattr(c, "text", "") or getattr(c, "refusal", "")
+            entry["content"] = text
+
+        elif kind == "tool_call_item":
+            raw = item.raw_item
+            entry["name"] = getattr(raw, "name", None)
+            entry["arguments"] = getattr(raw, "arguments", None)
+
+        elif kind == "tool_call_output_item":
+            output = str(item.output) if item.output is not None else ""
+            if len(output) > TOOL_OUTPUT_TRUNCATE:
+                output = output[:TOOL_OUTPUT_TRUNCATE] + f"... [{len(output) - TOOL_OUTPUT_TRUNCATE} chars truncated]"
+            entry["output"] = output
+
+        elif kind == "handoff_output_item":
+            entry["from"] = getattr(getattr(item, "source_agent", None), "name", None)
+            entry["to"] = getattr(getattr(item, "target_agent", None), "name", None)
+
+        elif kind == "reasoning_item":
+            raw = item.raw_item
+            content = getattr(raw, "content", None) or getattr(raw, "summary", None)
+            text = ""
+            if isinstance(content, list):
+                for c in content:
+                    text += getattr(c, "text", "")
+            elif isinstance(content, str):
+                text = content
+            entry["content"] = text[:2000] if text else ""
+
+        transcript.append(entry)
+    return transcript
+
+
 async def main() -> dict:
     from cai.sdk.agents import Runner
     from cai.agents.factory import get_agent_factory
@@ -129,6 +176,7 @@ async def main() -> dict:
         "input_tokens": getattr(model, "total_input_tokens", None),
         "output_tokens": getattr(model, "total_output_tokens", None),
         "cost_usd": getattr(model, "total_cost", None),
+        "transcript": serialize_transcript(result.new_items),
     }
 
 

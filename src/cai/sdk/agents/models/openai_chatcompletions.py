@@ -2808,15 +2808,13 @@ class OpenAIChatCompletionsModel(Model):
                     kwargs.pop("tool_choice", None)
 
                 # Add extended reasoning support for Claude models
-                # Supports Claude 3.7, Claude 4, and any model with "thinking" in the name
+                # Supports Claude 3.7, Claude 4+, and any model with "thinking" in the name
                 has_reasoning_capability = (
                     "thinking" in model_str
                     or
-                    # Claude 4 models support reasoning
-                    "-4-" in model_str
-                    or "sonnet-4" in model_str
-                    or "haiku-4" in model_str
-                    or "opus-4" in model_str
+                    # Claude 4+ models: claude-{variant}-{major>=4}[-.]
+                    # Matches sonnet-4, haiku-4, opus-4 and any future variant names
+                    bool(re.search(r"claude-[a-z]+-[4-9]", model_str))
                     or "3.7" in model_str
                 )
 
@@ -2859,8 +2857,12 @@ class OpenAIChatCompletionsModel(Model):
                     kwargs.pop("tool_choice", None)
 
                 # Add extended reasoning support for Claude models
-                # Supports Claude 3.7, Claude 4, and any model with "thinking" in the name
-                has_reasoning_capability = "thinking" in model_str
+                # Supports Claude 3.7, Claude 4+, and any model with "thinking" in the name
+                has_reasoning_capability = (
+                    "thinking" in model_str
+                    or bool(re.search(r"claude-[a-z]+-[4-9]", model_str))
+                    or "3.7" in model_str
+                )
 
                 if has_reasoning_capability:
                     # Clean the model name by removing "thinking" before sending to API

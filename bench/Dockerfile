@@ -2,6 +2,9 @@ FROM kali-headless-base-arm64:latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends seclists && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# seclists installs to /usr/share/seclists; symlink to where the system prompt expects them
+RUN mkdir -p /usr/share/wordlists && ln -s /usr/share/seclists /usr/share/wordlists/seclists
+
 RUN mkdir -p /root/.pip && printf '[global]\nbreak-system-packages = true\n' > /root/.pip/pip.conf
 
 # Install CAI from source so branch changes are included
