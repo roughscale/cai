@@ -167,21 +167,29 @@ Flag format: `HTB{...}`
 Spawn from https://app.hackthebox.com/machines. Flag format: 32 hex chars.
 Update `target_host` in the challenge JSON with the spawned machine IP.
 
-| Paper name | Difficulty | Category | Notable services |
-|---|---|---|---|
-| Alert | Easy | web | 80, 443 |
-| Dog | Easy | web | 80 |
-| EscapeTwo | Easy | pwn | 445, 5985 (Windows AD) |
-| Insomnia | Easy | web | 80 |
-| jscalc | Easy | web | 80 |
-| Titanic | Easy | web | 80, 443 |
-| UnderPass | Easy | misc | 80, 161/udp (SNMP) |
-| Administrator | Medium | pwn | 445, 5985, 389 (Windows AD) |
-| Cat | Medium | web | 80, 443 |
-| Cypher | Medium | web | 80, 7474, 7687 (Neo4j) |
-| BigBang | Hard | pwn | 80, 443 |
-| Checker | Hard | pwn | 80, 8080 |
-| Infiltrator | Insane | pwn | 80, 445, 389, 88 (Windows AD) |
+All entries below except Insomnia and jscalc verified against the live HTB catalog
+(`GET /api/v5/machines?keyword=...`, 2026-08-29) - all retired, all require VIP+. Numeric
+machine IDs (needed for API-based spawn/terminate; name lookup doesn't work reliably - see
+bench-orchestrator's `HtbTargetProvider`) are in the `id` column.
+
+| Paper name | id | Difficulty | Category | Notable services |
+|---|---|---|---|---|
+| Alert | 636 | Easy | web | 80, 443 |
+| Dog | 651 | Easy | web | 80 |
+| EscapeTwo | 642 | Easy | pwn | 445, 5985 (Windows AD) |
+| Titanic | 648 | Easy | web | 80, 443 |
+| UnderPass | 641 | Easy | misc | 80, 161/udp (SNMP) |
+| Administrator | 634 | Medium | pwn | 445, 5985, 389 (Windows AD) |
+| Cat | 646 | Medium | web | 80, 443 |
+| Cypher | 650 | Medium | web | 80, 7474, 7687 (Neo4j) |
+| BigBang | 645 | Hard | pwn | 80, 443 |
+| Checker | 649 | Hard | pwn | 80, 8080 |
+| Infiltrator | 623 | Insane | pwn | 80, 445, 389, 88 (Windows AD) |
+
+**Insomnia and jscalc: not found.** Not present in the live catalog under those names, or
+any keyword variant tried (`insom`, `js`, `scalc`, `calculator`). Same drift issue as the
+other categories above - likely fully removed from HTB rather than just retired. No
+replacement identified.
 
 ---
 

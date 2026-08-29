@@ -85,6 +85,12 @@ class OpenAIResponsesModel(Model):
         self.disable_rich_streaming = False
         self.suppress_final_output = False
         self.previous_response_id: str | None = None
+        # How many leading items of the full reconstructed input list
+        # previous_response_id already covers - lets _fetch_response send only
+        # what's genuinely new each turn (see _fetch_response) instead of
+        # refiltering the whole history by item type.
+        self._sent_item_count: int = 0
+        self._pending_sent_item_count: int = 0
         self.logger = get_session_recorder()
 
         if agent_id and PARALLEL_ISOLATION.is_parallel_mode():
@@ -316,6 +322,7 @@ class OpenAIResponsesModel(Model):
                 self._log_assistant_output(response)
 
                 self.previous_response_id = response.id
+                self._sent_item_count = self._pending_sent_item_count
 
                 write_model_trace(
                     "model_get_response_end",
@@ -433,6 +440,7 @@ class OpenAIResponsesModel(Model):
 
                 if final_response is not None:
                     self.previous_response_id = final_response.id
+                    self._sent_item_count = self._pending_sent_item_count
 
             except Exception as e:
                 span_response.set_error(
@@ -484,15 +492,24 @@ class OpenAIResponsesModel(Model):
             ItemHelpers.input_to_new_input_list(input)
         )
         previous_response_id = self.previous_response_id
+        self._pending_sent_item_count = len(list_input)
 
         if previous_response_id:
-            incremental_items = [
-                item
-                for item in list_input
-                if isinstance(item, dict) and item.get("type") == "function_call_output"
+            # Only items added since the last response are candidates - and
+            # within those, only ones the server doesn't already have. A
+            # typed item (function_call, message, reasoning, ...) is the
+            # model's own prior output, already recorded server-side under
+            # previous_response_id; resending it errors as a duplicate.
+            # Tool outputs and plain untyped messages (e.g. a fresh user
+            # turn / continuation nudge) are the only genuinely new input.
+            new_items = [
+                item for item in list_input[self._sent_item_count:]
+                if isinstance(item, dict)
+                and (item.get("type") in ("function_call_output", "computer_call_output")
+                     or "type" not in item)
             ]
-            if incremental_items:
-                list_input = incremental_items
+            if new_items:
+                list_input = new_items
             else:
                 previous_response_id = None
                 self.previous_response_id = None
