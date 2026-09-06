@@ -13,6 +13,37 @@ from cai.sdk.agents.logger import logger
 from cai.sdk.agents.models.openai_responses import OpenAIResponsesModel
 
 
+def create_model_instance(
+    model_name: str,
+    openai_client: AsyncOpenAI | None = None,
+    agent_name: str = "Agent",
+    agent_id: str | None = None,
+    agent_type: str | None = None,
+):
+    """Create the appropriate model instance based on model name.
+
+    GPT-5 models route to OpenAIResponsesModel (litellm.aresponses),
+    all others to OpenAIChatCompletionsModel (litellm.acompletion).
+    """
+    if model_name.strip().lower().startswith("gpt-5"):
+        return OpenAIResponsesModel(
+            model=model_name,
+            agent_name=agent_name,
+            agent_id=agent_id,
+            agent_type=agent_type,
+        )
+    client = openai_client or AsyncOpenAI(
+        api_key=os.getenv("OPENAI_API_KEY", "sk-placeholder-key-for-local-models")
+    )
+    return OpenAIChatCompletionsModel(
+        model=model_name,
+        openai_client=client,
+        agent_name=agent_name,
+        agent_id=agent_id,
+        agent_type=agent_type,
+    )
+
+
 def create_generic_agent_factory(
     agent_module_path: str, agent_var_name: str
 ) -> Callable[[str|None, str|None], Agent]:
@@ -47,25 +78,12 @@ def create_generic_agent_factory(
             model_name = os.environ.get("CAI_MODEL", "alias1")
             
             
-        api_key = os.getenv("OPENAI_API_KEY", "sk-placeholder-key-for-local-models")
-
-        # Route GPT-5 models to the Responses API via litellm.aresponses();
-        # all other models use the Chat Completions API via litellm.acompletion().
-        if model_name.strip().lower().startswith("gpt-5"):
-            new_model = OpenAIResponsesModel(
-                model=model_name,
-                agent_name=original_agent.name,
-                agent_id=agent_id,
-                agent_type=agent_var_name,
-            )
-        else:
-            new_model = OpenAIChatCompletionsModel(
-                model=model_name,
-                openai_client=AsyncOpenAI(api_key=api_key),
-                agent_name=original_agent.name,
-                agent_id=agent_id,
-                agent_type=agent_var_name,
-            )
+        new_model = create_model_instance(
+            model_name=model_name,
+            agent_name=original_agent.name,
+            agent_id=agent_id,
+            agent_type=agent_var_name,
+        )
         
         # Mark as parallel agent if running in parallel mode
         parallel_count = int(os.getenv("CAI_PARALLEL", "1"))

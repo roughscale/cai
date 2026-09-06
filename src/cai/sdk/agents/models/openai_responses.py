@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -344,6 +345,18 @@ class OpenAIResponsesModel(Model):
         stream: Literal[True] | Literal[False] = False,
     ) -> Response | AsyncStream[ResponseStreamEvent]:
         list_input = ItemHelpers.input_to_new_input_list(input)
+
+        import dataclasses
+        env_reasoning_effort = os.environ.get("CAI_REASONING_EFFORT")
+        env_verbosity = os.environ.get("CAI_VERBOSITY")
+        if env_reasoning_effort is not None and model_settings.reasoning_effort is None:
+            model_settings = dataclasses.replace(
+                model_settings, reasoning_effort=env_reasoning_effort
+            )
+        if env_verbosity is not None and model_settings.verbosity is None:
+            model_settings = dataclasses.replace(
+                model_settings, verbosity=env_verbosity
+            )
 
         parallel_tool_calls = (
             True

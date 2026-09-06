@@ -4725,11 +4725,9 @@ def detect_claude_thinking_in_stream(model_name):
     # Claude 4 models (like claude-sonnet-4-20250514) support reasoning
     # Also check for explicit "thinking" in model name
     has_claude_reasoning = "claude" in model_str and (
-        # Claude 4 models (sonnet-4, haiku-4, opus-4)
-        "-4-" in model_str
-        or "sonnet-4" in model_str
-        or "haiku-4" in model_str
-        or "opus-4" in model_str
+        # Claude 4+ models: claude-{variant}-{major>=4}[-.]
+        # Matches sonnet-4, haiku-4, opus-4 and any future variant names
+        bool(re.search(r"claude-[a-z]+-[4-9]", model_str))
         or
         # Legacy support for 3.7 and explicit thinking models
         "3.7" in model_str
