@@ -2543,6 +2543,12 @@ def cli_print_tool_output(
     if not hasattr(cli_print_tool_output, "_seen_calls"):
         cli_print_tool_output._seen_calls = {}
 
+    # Track per-turn display ordering so tool-only turns still have readable step numbers.
+    if not hasattr(cli_print_tool_output, "_turn_sequence_counts"):
+        cli_print_tool_output._turn_sequence_counts = {}
+    if not hasattr(cli_print_tool_output, "_command_sequence_labels"):
+        cli_print_tool_output._command_sequence_labels = {}
+
     # Track all displayed commands to prevent duplicates with cleanup
     if not hasattr(cli_print_tool_output, "_displayed_commands"):
         cli_print_tool_output._displayed_commands = set()
@@ -2661,6 +2667,24 @@ def cli_print_tool_output(
     # Note: interaction counter is now included in agent_context above
 
     # --- End of Command Key Generation ---
+
+    # Compute a stable display label for this command within the current agent turn.
+    sequence_label = None
+    if token_info and isinstance(token_info, dict):
+        interaction_counter = token_info.get("interaction_counter", 0)
+        agent_label = token_info.get("agent_name", "Agent")
+        if interaction_counter:
+            turn_key = f"{agent_label}:{interaction_counter}"
+            if command_key not in cli_print_tool_output._command_sequence_labels:
+                next_index = cli_print_tool_output._turn_sequence_counts.get(turn_key, 0) + 1
+                cli_print_tool_output._turn_sequence_counts[turn_key] = next_index
+                if next_index == 1:
+                    sequence_label = f"[{interaction_counter}]"
+                else:
+                    sequence_label = f"[{interaction_counter}.{next_index}]"
+                cli_print_tool_output._command_sequence_labels[command_key] = sequence_label
+            else:
+                sequence_label = cli_print_tool_output._command_sequence_labels[command_key]
 
     # Check for duplicate display conditions
     if streaming:
@@ -3055,7 +3079,10 @@ def cli_print_tool_output(
         # Get agent name from token_info for title prefix
         agent_prefix = ""
         if token_info and token_info.get("agent_name"):
-            agent_prefix = f"[cyan]{token_info['agent_name']}[/cyan] - "
+            if sequence_label:
+                agent_prefix = f"[bold cyan]{sequence_label}[/bold cyan] [cyan]{token_info['agent_name']}[/cyan] - "
+            else:
+                agent_prefix = f"[cyan]{token_info['agent_name']}[/cyan] - "
             
         # Create the title based on whether it's a handoff or regular tool
         if is_handoff:
@@ -3122,6 +3149,9 @@ def cli_print_tool_output(
                 agent_name = token_info.get("agent_name")
             else:
                 agent_name = "Agent"
+
+            if sequence_label:
+                agent_name = f"{sequence_label} {agent_name}"
                 
             # Extract the command from args
             command_text = ""

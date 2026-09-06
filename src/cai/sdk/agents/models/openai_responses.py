@@ -5,7 +5,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from openai import NOT_GIVEN, APIStatusError, AsyncOpenAI, AsyncStream, NotGiven
+import litellm
+from openai import NOT_GIVEN, APIStatusError, AsyncStream, NotGiven
 from openai.types import ChatModel
 from openai.types.responses import (
     Response,
@@ -24,6 +25,7 @@ from ..handoffs import Handoff
 from ..items import ItemHelpers, ModelResponse, TResponseInputItem
 from ..logger import logger
 from ..tool import ComputerTool, FileSearchTool, FunctionTool, Tool, WebSearchTool
+from ..model_trace import write_model_trace
 from ..tracing import SpanError, response_span
 from ..usage import Usage
 from ..version import __version__
@@ -52,25 +54,24 @@ class OpenAIResponsesModel(Model):
     def __init__(
         self,
         model: str | ChatModel,
-        openai_client: AsyncOpenAI,
+        agent_name: str = "Agent",
+        agent_id: str | None = None,
+        agent_type: str | None = None,
     ) -> None:
-        print(f"\nDEBUG: OpenAIResponsesModel initialized with model: {model}\n")
         self.model = model
-        self._client = openai_client
-        
+        self.agent_name = agent_name
+        self.agent_id = agent_id
+        self.agent_type = agent_type
+
         # Track interaction counter and token totals for cli display
         self.interaction_counter = 0
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_reasoning_tokens = 0
-        self.agent_name = "Agent"  # Default name
         
     def set_agent_name(self, name: str) -> None:
         """Set the agent name for CLI display purposes."""
         self.agent_name = name
-
-    def _non_null_or_not_given(self, value: Any) -> Any:
-        return value if value is not None else NOT_GIVEN
 
     async def get_response(
         self,
@@ -84,7 +85,21 @@ class OpenAIResponsesModel(Model):
     ) -> ModelResponse:
         # Increment the interaction counter for CLI display
         self.interaction_counter += 1
-        
+
+        write_model_trace(
+            "model_get_response_start",
+            adapter="openai_responses",
+            agent_name=self.agent_name,
+            agent_type=self.agent_type,
+            model=str(self.model),
+            system_instructions=system_instructions,
+            input=input,
+            model_settings=model_settings,
+            tool_names=[tool.name for tool in tools if hasattr(tool, "name")],
+            handoff_names=[handoff.tool_name for handoff in handoffs],
+            output_schema=output_schema.json_schema() if output_schema else None,
+        )
+
         with response_span(disabled=tracing.is_disabled()) as span_response:
             try:
                 response = await self._fetch_response(
@@ -174,7 +189,25 @@ class OpenAIResponsesModel(Model):
                 )
                 request_id = e.request_id if isinstance(e, APIStatusError) else None
                 logger.error(f"Error getting response: {e}. (request_id: {request_id})")
+                write_model_trace(
+                    "model_get_response_error",
+                    adapter="openai_responses",
+                    agent_name=self.agent_name,
+                    model=str(self.model),
+                    error=str(e),
+                )
                 raise
+
+        write_model_trace(
+            "model_get_response_end",
+            adapter="openai_responses",
+            agent_name=self.agent_name,
+            model=str(self.model),
+            usage=usage,
+            referenceable_id=response.id,
+            raw_response=response,
+            model_response_output=response.output,
+        )
 
         return ModelResponse(
             output=response.output,
@@ -336,30 +369,52 @@ class OpenAIResponsesModel(Model):
                 f"Response format: {response_format}\n"
             )
 
-        return await self._client.responses.create(
-            instructions=self._non_null_or_not_given(system_instructions),
-            model=self.model,
-            input=list_input,
-            include=converted_tools.includes,
-            tools=converted_tools.tools,
-            temperature=self._non_null_or_not_given(model_settings.temperature),
-            top_p=self._non_null_or_not_given(model_settings.top_p),
-            truncation=self._non_null_or_not_given(model_settings.truncation),
-            max_output_tokens=self._non_null_or_not_given(model_settings.max_tokens),
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            stream=stream,
-            extra_headers=_HEADERS,
-            text=response_format,
-            store=self._non_null_or_not_given(model_settings.store),
+        write_model_trace(
+            "model_api_request",
+            adapter="openai_responses",
+            agent_name=self.agent_name,
+            model=str(self.model),
+            request={
+                "instructions": system_instructions,
+                "input": list_input,
+                "include": converted_tools.includes,
+                "tools": converted_tools.tools,
+                "temperature": model_settings.temperature,
+                "top_p": model_settings.top_p,
+                "truncation": model_settings.truncation,
+                "max_output_tokens": model_settings.max_tokens,
+                "tool_choice": tool_choice if tool_choice is not NOT_GIVEN else None,
+                "parallel_tool_calls": None if parallel_tool_calls is NOT_GIVEN else parallel_tool_calls,
+                "text": response_format if response_format is not NOT_GIVEN else None,
+                "store": model_settings.store,
+                "stream": stream,
+            },
         )
 
-    def _get_client(self) -> AsyncOpenAI:
-        if self._client is None:
-            # Determine API key
-            api_key = os.getenv("ALIAS_API_KEY", os.getenv("OPENAI_API_KEY", "sk-alias-1234567890"))
-            self._client = AsyncOpenAI(api_key=api_key)
-        return self._client
+        kwargs: dict[str, Any] = {
+            "model": str(self.model),
+            "input": list_input,
+            "instructions": system_instructions,
+            "include": converted_tools.includes,
+            "tools": converted_tools.tools,
+            "temperature": model_settings.temperature,
+            "top_p": model_settings.top_p,
+            "truncation": model_settings.truncation,
+            "max_output_tokens": model_settings.max_tokens,
+            "tool_choice": tool_choice,
+            "parallel_tool_calls": parallel_tool_calls,
+            "stream": stream,
+            "text": response_format,
+            "store": model_settings.store,
+            "extra_headers": _HEADERS,
+        }
+        # litellm does not accept the OpenAI SDK's NOT_GIVEN sentinel
+        filtered_kwargs = {
+            k: v for k, v in kwargs.items()
+            if v is not None and v is not NOT_GIVEN
+        }
+
+        return await litellm.aresponses(**filtered_kwargs)
 
 
 @dataclass

@@ -40,6 +40,12 @@ class ModelSettings:
     max_tokens: int | None = None
     """The maximum number of output tokens to generate."""
 
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    """Reasoning effort for model families that expose explicit reasoning controls."""
+
+    verbosity: Literal["low", "medium", "high"] | None = None
+    """Text verbosity for model families that expose output verbosity controls."""
+
     store: bool | None = None
     """Whether to store the generated model response for later retrieval.
     Defaults to True if not provided."""

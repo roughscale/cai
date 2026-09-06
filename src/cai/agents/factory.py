@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 
 from cai.sdk.agents import Agent, OpenAIChatCompletionsModel
 from cai.sdk.agents.logger import logger
+from cai.sdk.agents.models.openai_responses import OpenAIResponsesModel
 
 
 def create_generic_agent_factory(
@@ -48,15 +49,23 @@ def create_generic_agent_factory(
             
         api_key = os.getenv("OPENAI_API_KEY", "sk-placeholder-key-for-local-models")
 
-        # Create a new model instance with the original agent name
-        # Custom name is only for display purposes, not for the model
-        new_model = OpenAIChatCompletionsModel(
-            model=model_name,
-            openai_client=AsyncOpenAI(api_key=api_key),
-            agent_name=original_agent.name,  # Always use original agent name
-            agent_id=agent_id,
-            agent_type=agent_var_name,  # Pass the agent type for registry
-        )
+        # Route GPT-5 models to the Responses API via litellm.aresponses();
+        # all other models use the Chat Completions API via litellm.acompletion().
+        if model_name.strip().lower().startswith("gpt-5"):
+            new_model = OpenAIResponsesModel(
+                model=model_name,
+                agent_name=original_agent.name,
+                agent_id=agent_id,
+                agent_type=agent_var_name,
+            )
+        else:
+            new_model = OpenAIChatCompletionsModel(
+                model=model_name,
+                openai_client=AsyncOpenAI(api_key=api_key),
+                agent_name=original_agent.name,
+                agent_id=agent_id,
+                agent_type=agent_var_name,
+            )
         
         # Mark as parallel agent if running in parallel mode
         parallel_count = int(os.getenv("CAI_PARALLEL", "1"))

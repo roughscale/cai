@@ -373,22 +373,44 @@ def update_agent_models_recursively(agent, new_model, visited=None):
 
     # Update the main agent's model
     if hasattr(agent, "model") and hasattr(agent.model, "model"):
-        agent.model.model = new_model
-        # Also ensure the agent name is set correctly in the model
-        if hasattr(agent.model, "agent_name"):
-            agent.model.agent_name = agent.name
-        
-        # IMPORTANT: Clear any cached state in the model that might be model-specific
-        # This ensures the model doesn't have stale state from the previous model
-        if hasattr(agent.model, "_client"):
-            # Force recreation of the client on next use
-            agent.model._client = None
-        if hasattr(agent.model, "_converter"):
-            # Reset the converter's state
-            if hasattr(agent.model._converter, "recent_tool_calls"):
-                agent.model._converter.recent_tool_calls.clear()
-            if hasattr(agent.model._converter, "tool_outputs"):
-                agent.model._converter.tool_outputs.clear()
+        existing_model = agent.model
+
+        if str(new_model).strip().lower().startswith("gpt-5"):
+            from cai.sdk.agents.models.openai_responses import OpenAIResponsesModel
+            new_model_instance = OpenAIResponsesModel(
+                model=new_model,
+                agent_name=agent.name,
+                agent_id=getattr(existing_model, "agent_id", None),
+                agent_type=getattr(existing_model, "agent_type", None),
+            )
+        else:
+            from openai import AsyncOpenAI
+            from cai.sdk.agents import OpenAIChatCompletionsModel
+            new_model_instance = OpenAIChatCompletionsModel(
+                model=new_model,
+                openai_client=existing_model._client if hasattr(existing_model, "_client") else AsyncOpenAI(),
+                agent_name=agent.name,
+                agent_id=getattr(existing_model, "agent_id", None),
+                agent_type=getattr(existing_model, "agent_type", None),
+            )
+
+        if hasattr(existing_model, "message_history") and hasattr(new_model_instance, "message_history"):
+            new_model_instance.message_history = existing_model.message_history
+
+        for attr_name in (
+            "interaction_counter",
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_reasoning_tokens",
+            "total_cost",
+            "disable_rich_streaming",
+            "suppress_final_output",
+            "uses_unified_context",
+        ):
+            if hasattr(existing_model, attr_name) and hasattr(new_model_instance, attr_name):
+                setattr(new_model_instance, attr_name, getattr(existing_model, attr_name))
+
+        agent.model = new_model_instance
 
     # Update models for all handoff agents
     if hasattr(agent, "handoffs"):
@@ -706,7 +728,9 @@ def run_cai_cli(
             start_active_timer()
             
             if not user_input.strip():
-                user_input = "User input is empty, maybe wants to continue"  # Set a default message to continue the conversation
+                # Blank input is not an instruction to continue the agent.
+                # In normal interactive mode we should just wait for the next real user message.
+                continue
 
             # In parallel mode, all configured agents will run automatically
             # No agent selection menu - just run all agents
