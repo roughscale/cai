@@ -1,4 +1,4 @@
-FROM kali-headless-base-arm64:latest
+FROM kali-headless-base:latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends seclists && apt-get clean && rm -rf /var/lib/apt/lists/*
 
